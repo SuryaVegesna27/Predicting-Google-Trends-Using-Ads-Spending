@@ -1,0 +1,415 @@
+---
+title: "Mini Project"
+author: "Priyanka Bhosale, Surya Vegesna, Sharmi Pillella"
+date: "2024-03-15"
+output: pdf_document
+---
+
+# Project-3: Using 2 datasets: Home Depot Ad Spending and Google Trends for the analysis.
+
+```{r}
+
+# Load the necessary libraries
+library(ggplot2)
+library(forecast)
+
+# Set a CRAN mirror manually
+options(repos = structure(c(CRAN = "https://cloud.r-project.org/")))
+install.packages('prophet')
+library(prophet)
+library(dplyr)
+
+# Read the Google Trends data
+google_trends = read.csv("homedepot_googletrends.csv")
+
+# Read the Home Depot ad spending data
+homedepot_adspend = read.csv("homedepot.adspend.csv")
+
+```
+
+# Original Datasets details:
+
+There are 1821 rows and 5 columns in Google Trends CSV dataset.
+There are 756 rows and  13 columns in Home Depot Ad Spending dataset.
+
+```{r}
+
+str(google_trends)
+str(homedepot_adspend)
+
+```
+# Pre-processing on Google Trends dataset:
+
+There is one missing value, and after dropping this missing row, the dataset now has 1820 rows and 4 columns. The first column is renamed to "id". Column "date" is a character datatype, so converted this into Date datatype. Columns "date" and "period" hold the same data, i.e., the date. So dropped "period" column to avoid having duplicate and irrelevant columns in this dataset. Converted columns "value" and "onediffvalue" to numeric datatypes.
+
+# Pre-processing on Home Depot Ad Spending dataset:
+
+There is no missing value. The column names are renamed to make more sense and meaningful, for eg. DOLS renamed to Dollars, removed (000) from the column names. Column TIME_PERIOD is in a format that cannot be used directly for analysis. It is in the format "WEEK OF OCT 07, 2013 (B)". So removed WEEK OF and the last (B) from such values and converted this character datatype to Date datatype with a consistent format.
+
+```{r}
+
+sum(is.na(google_trends))
+sum(is.na(homedepot_adspend))
+
+# Get location of null values
+which(is.na(google_trends))
+
+# Remove rows with missing values
+google_trends = na.omit(google_trends)
+
+# Check if the missing data is deleted. This should print 0 now
+sum(is.na(google_trends))
+
+# Add column name to the first column of Google Trends dataset
+colnames(google_trends)[1] = "id"
+
+# Rename columns of Home Depot Ad Spending
+names(homedepot_adspend) <- c("TIME_PERIOD", "PRODUCT", "TOTAL_DOLLARS", "NETWORK_TV_DOLLARS", 
+              "CABLE_TV_DOLLARS", "SYNDICATION_DOLLARS", "SPOT_TV_DOLLARS", "MAGAZINES_DOLLARS",
+              "NATL_NEWSP_DOLLARS", "NEWSPAPER_DOLLARS", "NETWORK_RADIO_DOLLARS", 
+              "NAT_SPOT_RADIO_DOLLARS", "OUTDOOR_DOLLARS")
+
+# Check the new column names
+colnames(homedepot_adspend)
+
+# Convert date column to Date format
+google_trends$date = as.Date(google_trends$date, format = "%b %d %Y")
+
+# Remove label "WEEK OF" and the last "(B)" from the "TIME PERIOD" column of 
+# Home Depot Ad Spending dataset
+homedepot_adspend$`TIME_PERIOD` = trimws(sub("WEEK OF ", "", homedepot_adspend$`TIME_PERIOD`))
+homedepot_adspend$`TIME_PERIOD` = trimws(sub(" \\(B\\)$", "", homedepot_adspend$`TIME_PERIOD`))
+homedepot_adspend$`TIME_PERIOD` = as.Date(homedepot_adspend$`TIME_PERIOD`, format = "%b %d, %Y")
+
+# Since we converted date column to Date datatype, "period" column is a duplicate and 
+# irrelevant column. Drop "period".
+drop = c('period')
+google_trends = google_trends[,!(names(google_trends) %in% drop)]
+
+# Convert the value and onediffvalue columns to numeric
+google_trends$value <- as.numeric(google_trends$value)
+google_trends$onediffvalue <- as.numeric(google_trends$onediffvalue)
+
+str(google_trends)
+str(homedepot_adspend)
+
+```
+# Summarize Google Trends Data:
+
+```{r}
+
+summary(google_trends)
+
+```
+
+# Visualize Google Trends Data:
+
+This plot shows the Google Trends data, specifically the trend in the search volume for "Home Depot" over time. The x-axis represents the date, and the y-axis represents the value. The plot shows a clear seasonal pattern, with value peaking around the same time each year, likely due to seasonal factors affecting home improvement projects.
+
+```{r}
+
+# Visualize the Google Trends data -> Date vs Value
+ggplot(data = google_trends, aes(x = date, y = value)) +
+  geom_line() +
+  labs(title = "Google Trends Data Visualization")
+
+```
+
+```{r}
+
+# Performing adf test for checking the stationarity
+library(zoo)
+library(tseries)
+
+# Perform the ADF test
+adf_result <- adf.test(google_trends$value)
+
+# Print the ADF test result
+print(adf_result)
+
+```
+Even though p-value is less than \[\alpha\] (where \[\alpha\]=0.05), we can see a significant variance in data. So to get rid off the variance we need to difference the data. There is a differenced data in google trends dataset and is stored in "onediffvalue" column. We now will perform plot the graph for onediffvalue.
+
+# Visualize Google Trends Data -> Date vs One Difference Value:
+
+This plot shows the first-order differenced values of the Google Trends data, which helps to remove the trend and make the time series stationary. The x-axis represents the date, and the y-axis represents the differenced value. The plot shows a more stable pattern around a constant mean, indicating that the differencing has removed the trend and seasonality from the original data.
+
+```{r}
+
+# Line plot for x = date and y = onediffvalue
+ggplot(data = google_trends, aes(x = date, y = onediffvalue)) +
+  geom_line() +
+  labs(title = "Google Trends: Date vs. One Diff Value", x = "Date", y = "One Diff Value")
+
+```
+
+# ACF and PACF Plots for Google Trends with One Difference Value:
+
+These plots show the Autocorrelation Function (ACF) and Partial Autocorrelation Function (PACF) for the differenced Google Trends data. The ACF plot shows a significant spike at lag 1, suggesting the presence of a first-order moving average (MA) component in the time series. The PACF plot shows a decaying pattern, indicating the potential presence of an autoregressive (AR) component. These plots help identify the appropriate orders for the ARIMA/SARIMA models.
+
+```{r}
+
+# ACF and PACF plots for Google Trends
+acf(google_trends$onediffvalue, main = "ACF Plot for Google Trends with One Difference Value")
+pacf(google_trends$onediffvalue, main = "PACF Plot for Google Trends with One Difference Value")
+
+```
+
+# Summarize Home Depot Advertisement Spending Data:
+
+```{r}
+
+summary(homedepot_adspend)
+
+```
+
+# Visualize Home Depot Advertisement Spending Data -> Time Period vs Total Dollars:
+
+This plot shows the Home Depot advertisement spending over time, represented by the Total Dollars spent on advertising. The x-axis represents the time period, and the y-axis represents the total advertising dollars spent. The plot reveals a cyclical pattern, with peaks and valleys in advertising spending, possibly related to seasonal demand or marketing campaigns.
+
+```{r}
+
+# Visualize the Home Depot Ad Spending data
+ggplot(data = homedepot_adspend, aes(x = TIME_PERIOD, y = TOTAL_DOLLARS)) +
+  geom_line() +
+  labs(title = "Home Depot Ad Spending Data Visualization")
+
+```
+
+# ADF test for Home Depot Ad Spending TOTAL_DOLLARS:
+
+The plot and the ADF test signifies stationarity in the data. We go ahead and take log and differencing to remove/minimize stationarity.
+
+```{r}
+
+# Performing adf test for checking the stationarity
+
+adf_result <- adf.test(homedepot_adspend$TOTAL_DOLLARS)
+
+# Print the ADF test result
+print(adf_result)
+
+```
+# First-order differencing for TOTAL_DOLLARS:
+
+This plot shows the first-order differenced values of the Home Depot advertisement spending, which helps to remove the trend and make the time series stationary. The x-axis represents the time period, and the y-axis represents the differenced total advertising dollars. The plot shows a more stable pattern around a constant mean, indicating that the differencing has removed the trend and seasonality from the original data.
+
+```{r}
+
+homedepot_adspend$DIFF_TOTAL_DOLLARS = c(NA, diff(log(homedepot_adspend$TOTAL_DOLLARS)))
+
+# Visualize the Home Depot Ad Spending data
+ggplot(data = homedepot_adspend, aes(x = TIME_PERIOD, y = DIFF_TOTAL_DOLLARS)) +
+  geom_line() +
+  labs(title = "Differenced Home Depot Ad Spending Data Visualization")
+
+```
+
+# ACF and PACF with DIFF_TOTAL_DOLLARS:
+
+These plots show the ACF and PACF for the differenced Home Depot advertisement spending data. The ACF plot shows a significant spike at lag 1, suggesting the presence of a first-order moving average (MA) component in the time series. The PACF plot shows a decaying pattern, indicating the potential presence of an autoregressive (AR) component. These plots help identify the appropriate orders for the ARIMA/SARIMA models for the advertisement spending data.
+
+```{r}
+
+sum(is.na(homedepot_adspend))
+homedepot_adspend = na.omit(homedepot_adspend)
+
+# Filter rows with infinite values in DIFF_TOTAL_DOLLARS
+inf_rows <- which(!is.finite(homedepot_adspend$DIFF_TOTAL_DOLLARS))
+
+# Remove rows with infinite values
+homedepot_adspend <- homedepot_adspend[-inf_rows, ]
+
+# ACF and PACF plots for Google Trends
+acf(homedepot_adspend$DIFF_TOTAL_DOLLARS, main = "ACF Plot for Homedepot's DIFF_TOTAL_DOLLARS")
+pacf(homedepot_adspend$DIFF_TOTAL_DOLLARS, main = "PACF Plot for Homedepot's DIFF_TOTAL_DOLLARS")
+
+```
+
+# Relationship between Google Trends and advertisement spending:
+
+Merge the 2 datasets into one, on columns "date" of Google Trends and "Time_Period" of Home Depot Ads Spending. Removed missing values.
+
+Google Trends's "date" column has daily data and Home Depot Ads Spending's "TIME_PERIOD". So when these 2 datasets are merged on date and TIME_PERIOD columns, we get the merged dataset with weekly data with 735 rows. Head() of this merged data is also printed for reference that shows date as weekly.
+
+```{r}
+# Merge the datasets based on the date column
+merged_data <- merge(google_trends, homedepot_adspend, by.x = "date", by.y = "TIME_PERIOD", all = TRUE)
+sum(is.na(merged_data))
+
+# Remove rows with missing values
+merged_data = na.omit(merged_data)
+
+print(nrow(merged_data))
+
+head(merged_data)
+
+```
+
+# Visualize Merged Data:
+
+1. Plot-1 (Differenced Google Trends Differenced Value vs. Date): This plot shows the differenced Google Trends data over time. The x-axis represents the date, and the y-axis represents the differenced value. This plot is similar to the "Google Trends: Date vs. One Diff Value" plot but is presented after merging the Google Trends and Home Depot advertisement spending datasets.
+
+2. Plot-2 (Differenced TOTAL DOLLARS for Home Depot Ad Spending Data): This plot shows the differenced Home Depot advertisement spending over time. The x-axis represents the date, and the y-axis represents the differenced total advertising dollars. This plot is similar to the "Differenced Home Depot Ad Spending Data Visualization" but is presented after merging the Google Trends and Home Depot advertisement spending datasets. 
+
+3. Plot-3 (Google Trends Differenced Value vs. Total Advertisement Spending Differenced Total Dollars): This plot shows the relationship between the differenced Google Trends data (y-axis) and the differenced Home Depot advertisement spending (x-axis). It helps visualize the potential correlation or relationship between the two variables, which is useful for building regression models like SARIMAX.
+
+```{r}
+
+# Plot the differenced Google Trends data
+ggplot(merged_data, aes(x = date, y = onediffvalue)) +
+  geom_line() +
+  labs(title = "Differenced Google Trends Differenced Value vs Date", x = "Date", 
+                      y = "Differenced Value")
+
+# Plotting the differenced Home Depot Ad Spending data
+ggplot(merged_data, aes(x = date, y = DIFF_TOTAL_DOLLARS)) +
+  geom_line() +
+  labs(title = "Differenced TOTAL DOLLARS for Home Depot Ad Spending Data", x = "Date",
+                      y = "Differenced Dollars")
+
+# Plot Google Trends data over time
+ggplot(data = merged_data, aes(x = DIFF_TOTAL_DOLLARS, y = onediffvalue)) +
+  geom_line() +
+  labs(title = "Google Trends Differenced Value vs Total Advertisement Spending Differenced Total Dollars", 
+                      x = "Total Ad Spend in dollars", y = "Google Trends Value")
+
+```
+
+# ACF and PACF plots for the merged dataset - Differenced values of Google Trends (onediffvalue) and Home Depot Ad Spending (DIFF_TOTAL_DOLLARS)
+
+```{r}
+
+acf(merged_data$onediffvalue, main = "ACF Plot for merged dataset: onediffvalue")
+pacf(merged_data$onediffvalue, main = "PACF Plot for merged dataset: Google Trends's onediffvalue")
+
+acf(merged_data$DIFF_TOTAL_DOLLARS, main = "ACF Plot for merged dataset: DIFF_TOTAL_DOLLARS")
+pacf(merged_data$DIFF_TOTAL_DOLLARS, main = "PACF Plot for merged dataset: DIFF_TOTAL_DOLLARS")
+
+```
+
+# Split the data into Training and Test (80% and 20%)
+
+```{r}
+# Split the data into training and testing sets
+train_size <- floor(0.8 * nrow(merged_data))
+train_data <- merged_data[1:train_size, ]
+test_data <- merged_data[(train_size + 1):nrow(merged_data), ] 
+
+```
+
+# Train models on train dataset:
+
+We chose to fit 2 models: 
+
+1. SARIMA without additional variables: We use auto.arima() to train the model. It correctly identifies the model to be a (0,0,2) model that matches well with the ACF and PACF plots mentioned above for the merged dataset's onediffvalue.
+
+2. SARIMAX with additional variables: We are using DIFF_TOTAL_DOLLARS of the merged dataset to be our external regressor and onediffvalue to be out target variable. The auto.arima() chooses the model to be a (0,0,2) model.
+
+```{r}
+
+# Train SARIMA model without additional variables
+sarima_model_wo_additional <- auto.arima(train_data$onediffvalue)
+summary(sarima_model_wo_additional)
+checkresiduals(sarima_model_wo_additional)
+
+# Train SARIMAX model with additional variables
+sarimax_model_additional <- auto.arima(train_data$onediffvalue, 
+                              xreg = train_data$DIFF_TOTAL_DOLLARS, seasonal = TRUE)
+summary(sarimax_model_additional)
+checkresiduals(sarimax_model_additional)
+
+```
+
+# Evaluate models on test dataset
+```{r}
+
+# Evaluate SARIMA model without additional variables
+sarima_model_wo_additional_pred <- forecast(sarima_model_wo_additional, h = nrow(test_data))
+
+# Evaluate SARIMAX model with additional variables
+sarimax_model_additional_pred <- forecast(sarimax_model_additional, h = nrow(test_data), 
+                                            xreg = test_data$DIFF_TOTAL_DOLLARS)
+
+```
+
+# MSPE for all models: 
+
+The MSPE values are calculated for the SARIMA and SARIMAX models on the test dataset, providing a measure of the models' predictive performance.
+
+MSPE for SARIMA model without additional variable: 7558075.43500495
+
+MSPE for SARIMAX model with additional variable: 7556795.88658626
+
+A lower MSPE value indicates better predictive accuracy. There is not much of a difference in this case, but "SARIMAX model with additional variable" performs slightly better than "SARIMA model without additional variable".
+
+```{r}
+
+# MSPE for SARIMA model without additional variables
+sarima_model_wo_additional_mspe <- mean((sarima_model_wo_additional_pred$mean - test_data$onediffvalue)^2)
+print(paste("Mean Squared Prediction Error (MSPE) for SARIMA model without additional variable:",
+                                          sarima_model_wo_additional_mspe))
+
+# MSPE for SARIMAX model with additional variables
+sarimax_model_additional_mspe <- mean((sarimax_model_additional_pred$mean - test_data$onediffvalue)^2)
+print(paste("Mean Squared Prediction Error (MSPE) for SARIMAX model with additional variable:",
+                                          sarimax_model_additional_mspe))
+
+```
+
+# Facebook Prophet on Google Trends:
+
+Now, we implement the Facebook Prophet model, which is an additive regression model for time series forecasting. The Prophet model is fit to the original Google Trends data, incorporating weekly seasonality. The MSPE value for the Prophet model is calculated on the test dataset, allowing for a comparison with the SARIMA and SARIMAX models. MSPE value for the Prophet model is 6611852.07536799.
+
+```{r}
+
+# Rename columns
+prophet_data = merged_data[, c("date", "value")]
+names(prophet_data) = c('ds', 'y')
+
+# Make sure 'ds' is a date type
+prophet_data$ds <- as.Date(prophet_data$ds)
+
+# Fit Prophet model
+prophet_model <- prophet(prophet_data, weekly.seasonality = TRUE, daily.seasonality = FALSE)
+
+# Prepare future dataframe for predictions
+future <- make_future_dataframe(prophet_model, periods = nrow(test_data))
+
+# Forecast
+prophet_forecast = predict(prophet_model, future)
+
+# Extract the predicted values for the test set dates
+forecasted_test_values <- prophet_forecast %>%
+  filter(ds > max(train_data$ds)) %>%
+  select(ds, yhat)
+
+# Merge the forecasted values with the actual values for the test set
+test_data <- merge(test_data, forecasted_test_values, by.x = "date", by.y = "ds")
+
+# Calculate MSPE on the test set
+prophet_mspe <- mean((test_data$value - test_data$yhat)^2, na.rm = TRUE)
+print(paste("Mean Squared Prediction Error (MSPE) for Prophet:", prophet_mspe))
+
+```
+
+# Compare MSPE's for all 3 models: 
+
+Prophet model better than SARIMA and SARIMAX since it has the lowest MSPE as compared to the other 2 models.
+
+```{r}
+
+# Create a data frame with the model names and MSPE values
+models <- c("SARIMA", "SARIMAX", "Prophet")
+mspe <- c(sarima_model_wo_additional_mspe, sarimax_model_additional_mspe, prophet_mspe)
+data <- data.frame(models, mspe)
+
+# Create a bar plot
+ggplot(data, aes(x = models, y = mspe, fill = models)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Comparison of MSPE Values",
+       x = "Model",
+       y = "MSPE") +
+  theme_minimal()
+
+```
